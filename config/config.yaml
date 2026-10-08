@@ -1,0 +1,68 @@
+gateway:
+  mode: "go"                    # "go" (production) or "fastapi_only" (dev)
+  fastapi_url: "http://localhost:8000"
+  listen_port: 8080
+  rate_limit:
+    rpm_per_key: 60
+    tpm_per_key: 100000
+  circuit_breaker:
+    failure_threshold: 3
+    cooldown_seconds: 60
+
+model_list:
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: gemini-2.0-flash
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GEMINI_API_KEY
+  - model_name: groq-llama
+    litellm_params:
+      model: groq/llama-3.3-70b
+      api_key: os.environ/GROQ_API_KEY
+
+router_settings:
+  fallbacks:
+    - gpt-4o-mini: ["gemini-2.0-flash", "groq-llama"]
+
+routing:
+  auto/cheap: ["gemini-2.0-flash", "gpt-4o-mini"]
+  auto/fast: ["groq-llama", "gemini-2.0-flash"]
+
+balance:
+  refresh_interval_seconds: 300
+  providers:
+    - name: openai
+      endpoint: https://api.openai.com/v1/dashboard/billing/credit_grants
+    - name: openrouter
+      endpoint: https://openrouter.ai/api/v1/credits
+    - name: deepseek
+      endpoint: https://api.deepseek.com/user/balance
+
+budgets:
+  default_monthly_usd: 50
+  warn_at_pct: 80
+  block_at_pct: 100
+
+security:
+  pii_redaction: true
+  pii_types: ["EMAIL", "PHONE", "SSN", "CREDIT_CARD", "API_KEY"]
+  provider_allowlist: ["openai", "gemini", "groq"]
+  store_prompts: false
+  log_retention_days: 30
+  injection_detection: true
+  injection_sensitivity: "high"
+  injection_risk_threshold: 0.7
+
+semantic_cache:
+  enabled: true
+  redis_url: os.environ/REDIS_URL
+  similarity_threshold: 0.90
+  ttl_seconds: 3600
+  namespace: "lunair"
+  exclude_agent_keys: true
+
+logging:
+  store_prompts_in_spend_logs: true
