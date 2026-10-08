@@ -1,0 +1,15 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+node_modules
+.venv
+venv
+__pycache__
+*.log
+docs
+tests
+infra
+postgres_data
+redis_data
