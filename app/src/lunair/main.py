@@ -1,5 +1,7 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from lunair.api.routes.chat import router_api as chat_router
+from lunair.api.routes.models import models_api as models_router
 from lunair.config import settings
 from lunair.schemas.chat import ChatCompletionRequest
 from lunair.schemas.common import HealthResponse
@@ -17,6 +19,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(chat_router)
+app.include_router(models_router)
 
 
 @app.get("/health", response_model=HealthResponse)
