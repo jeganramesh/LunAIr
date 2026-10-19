@@ -1,0 +1,11 @@
+# Ruff configuration for the LunAIR monorepo.
+#
+# Pinned explicitly so `ruff check` is deterministic across environments (the
+# rule set otherwise drifts with the installed ruff version). This mirrors the
+# classic default set: real errors and unused imports, nothing stylistic.
+
+target-version = "py310"
+line-length = 100
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
