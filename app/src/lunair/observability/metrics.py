@@ -37,6 +37,23 @@ USAGE_QUERY = Counter(
     ["endpoint"],
 )
 
+LOGGING_FAILURES = Counter(
+    "lunair_logging_failures_total",
+    "Request-log writes that failed (analytics may be incomplete).",
+)
+
+RATE_LIMITED = Counter(
+    "lunair_rate_limited_total",
+    "Requests rejected by the rate limiter.",
+    ["key_id"],
+)
+
+BUDGET_BLOCKED = Counter(
+    "lunair_budget_blocked_total",
+    "Requests rejected because a budget limit was reached.",
+    ["key_id"],
+)
+
 
 def observe_completion(
     provider: str,

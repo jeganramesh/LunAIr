@@ -1,13 +1,13 @@
-"""Retention and materialized-view maintenance."""
+"""Retention, partition provisioning and materialized-view maintenance."""
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 
 from lunair.config import settings
-from lunair.db.base import AsyncSessionLocal
+from lunair.db.base import AsyncSessionLocal, engine
 
 logger = logging.getLogger("lunair.retention")
 
@@ -17,9 +17,7 @@ HARD_CAP_DAYS = 180
 
 def effective_retention_days() -> int:
     """Configured retention, clamped to the documented hard cap."""
-    configured = settings.get_yaml_config().get("security", {}).get(
-        "log_retention_days", DEFAULT_RETENTION_DAYS
-    )
+    configured = settings.get_security_config().get("log_retention_days", DEFAULT_RETENTION_DAYS)
     try:
         days = int(configured)
     except (TypeError, ValueError):
@@ -27,17 +25,96 @@ def effective_retention_days() -> int:
     return max(1, min(days, HARD_CAP_DAYS))
 
 
-async def refresh_daily_usage() -> Dict[str, Any]:
+def _add_months(moment: datetime, months: int) -> datetime:
+    month_index = moment.month - 1 + months
+    year = moment.year + month_index // 12
+    month = month_index % 12 + 1
+    return moment.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _partition_name(moment: datetime) -> str:
+    return f"requests_y{moment.year}m{moment.month:02d}"
+
+
+async def _partition_exists(name: str) -> bool:
+    sql = text("SELECT to_regclass(:name) IS NOT NULL AS present")
+    try:
+        async with AsyncSessionLocal() as session:
+            return bool((await session.execute(sql, {"name": name})).scalar())
+    except Exception:
+        return False
+
+
+async def ensure_future_partitions(months_ahead: Optional[int] = None) -> Dict[str, Any]:
+    """Create monthly ``requests`` partitions for the current and next months.
+
+    Without this the partitioned table silently stops partitioning: every row
+    past the last provisioned month lands in ``requests_default``, which
+    retention never drops, so the table grows without bound.
+    """
+    ahead = months_ahead if months_ahead is not None else settings.partition_months_ahead
+    now = datetime.now(timezone.utc)
+    created: List[str] = []
+    present: List[str] = []
+
+    for offset in range(0, max(0, ahead) + 1):
+        start = _add_months(now, offset)
+        end = _add_months(now, offset + 1)
+        name = _partition_name(start)
+
+        if await _partition_exists(name):
+            present.append(name)
+            continue
+
+        ddl = (
+            f'CREATE TABLE IF NOT EXISTS "{name}" PARTITION OF requests '
+            f"FOR VALUES FROM ('{start:%Y-%m-%d} 00:00:00+00') "
+            f"TO ('{end:%Y-%m-%d} 00:00:00+00')"
+        )
+        try:
+            async with AsyncSessionLocal() as session:
+                await session.execute(text(ddl))
+                await session.commit()
+            created.append(name)
+            logger.info("created request partition %s", name)
+        except Exception as err:
+            logger.warning("failed to create partition %s: %s", name, type(err).__name__)
+
+    return {"created": created, "present": present}
+
+
+async def default_partition_row_count() -> int:
+    """Rows sitting in the catch-all partition — a signal partitions ran out."""
+    try:
+        async with AsyncSessionLocal() as session:
+            value = (await session.execute(text("SELECT count(*) FROM requests_default"))).scalar()
+            return int(value or 0)
+    except Exception:
+        return 0
+
+
+async def refresh_daily_usage(concurrent: bool = True) -> Dict[str, Any]:
     """Rebuild the daily_usage materialized view.
 
-    A plain REFRESH: the view is small (daily aggregates) and REFRESH
-    CONCURRENTLY cannot run inside a transaction block.
+    Prefers a CONCURRENT refresh (non-blocking for readers). That requires a
+    unique index, which exists (``ux_daily_usage_key``), and must run outside a
+    transaction — hence the AUTOCOMMIT connection. Falls back to a plain
+    refresh if the concurrent path is unavailable.
     """
+    if concurrent:
+        try:
+            async with engine.connect() as conn:
+                conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+                await conn.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY daily_usage"))
+            return {"refreshed": True, "concurrent": True}
+        except Exception as err:
+            logger.warning("concurrent matview refresh failed (%s); retrying plain", type(err).__name__)
+
     try:
         async with AsyncSessionLocal() as session:
             await session.execute(text("REFRESH MATERIALIZED VIEW daily_usage"))
             await session.commit()
-        return {"refreshed": True}
+        return {"refreshed": True, "concurrent": False}
     except Exception as err:
         logger.warning("daily_usage refresh failed: %s: %s", type(err).__name__, err)
         return {"refreshed": False, "error": f"{type(err).__name__}: {err}"}

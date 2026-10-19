@@ -40,12 +40,16 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-lunair}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-lunair}
       - REDIS_URL=redis://redis:6379/0
+      # Must match the gateway's value or the trusted-header path is refused.
+      - GATEWAY_SHARED_SECRET=${GATEWAY_SHARED_SECRET:-dev-insecure-shared-secret-change-me}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     ports:
+      # Development convenience. In production, remove this mapping and keep
+      # 8000 on the internal network only — see docs/security.md.
       - "8000:8000"
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")' || exit 1"]
@@ -57,8 +61,8 @@ services:
     build:
       context: ./gateway
       dockerfile: Dockerfile
-    # PLAN 1.12: the Go edge is opt-in so `docker compose up` runs in
-    # fastapi_only mode. Start the full stack with: --profile gateway
+    # The Go edge is opt-in so `docker compose up` runs in fastapi_only mode.
+    # Start the full stack with: --profile gateway
     profiles:
       - gateway
     restart: unless-stopped
@@ -68,6 +72,7 @@ services:
       - FASTAPI_URL=http://fastapi:8000
       - REDIS_URL=redis://redis:6379/0
       - GATEWAY_MODE=${GATEWAY_MODE:-go}
+      - GATEWAY_SHARED_SECRET=${GATEWAY_SHARED_SECRET:-dev-insecure-shared-secret-change-me}
     depends_on:
       fastapi:
         condition: service_healthy

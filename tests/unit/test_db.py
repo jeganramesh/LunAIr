@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy import select
 from lunair.db.base import AsyncSessionLocal
-from lunair.db.models import APIKey, Request, PIIEvent, InjectionEvent, BalanceSnapshot, Budget
+from lunair.db.models import APIKey
 
 
 @pytest.mark.asyncio

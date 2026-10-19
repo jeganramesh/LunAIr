@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 from lunair.config import settings
 from lunair.db.base import Base
-import lunair.db.models  # ensure models are registered
+import lunair.db.models  # noqa: F401  (ensure models are registered)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

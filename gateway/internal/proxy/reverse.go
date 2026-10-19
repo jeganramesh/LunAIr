@@ -12,11 +12,13 @@ import (
 )
 
 // Trusted headers injected on every forwarded request so FastAPI can skip
-// its own auth path (see app/src/lunair/core/trust.py).
+// its own auth path (see app/src/lunair/core/trust.py). The gateway secret is
+// what makes the trust header a proof rather than a claim.
 const (
-	HeaderVerified = "X-LUNAIR-Verified"
-	HeaderKeyID    = "X-LUNAIR-Key-Id"
-	HeaderGateway  = "X-LUNAIR-Gateway"
+	HeaderVerified      = "X-LUNAIR-Verified"
+	HeaderKeyID         = "X-LUNAIR-Key-Id"
+	HeaderGateway       = "X-LUNAIR-Gateway"
+	HeaderGatewaySecret = "X-LUNAIR-Gateway-Secret"
 )
 
 type Handler struct {
@@ -50,10 +52,15 @@ func NewHandler(cfg config.Config) (*Handler, error) {
 		req.URL.Host = target.Host
 		req.Host = target.Host
 
-		req.Header.Set(HeaderVerified, "true")
-		if req.Header.Get(HeaderKeyID) == "" {
-			req.Header.Set(HeaderKeyID, "gateway-verified-key")
+		// The auth middleware resolves the caller and sets HeaderKeyID to the
+		// server-side value. Overwrite here so a client cannot smuggle one in.
+		keyID := req.Header.Get(HeaderKeyID)
+		if keyID == "" {
+			keyID = "gateway-verified-key"
 		}
+		req.Header.Set(HeaderKeyID, keyID)
+		req.Header.Set(HeaderVerified, "true")
+		req.Header.Set(HeaderGatewaySecret, cfg.SharedSecret)
 		req.Header.Set(HeaderGateway, cfg.GatewayMode)
 	}
 

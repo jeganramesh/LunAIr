@@ -14,8 +14,10 @@ COPY app/src ./src
 COPY app/alembic.ini ./alembic.ini
 COPY app/migrations ./migrations
 COPY config ./config
-# /v1/benchmark serves scripts/bench-results.json, written by scripts/bench.sh
-COPY scripts/bench-results.json* ./scripts/
+# /v1/benchmark serves scripts/bench-results.json, written by scripts/bench.sh.
+# Copy the directory (not a wildcard) so the build does not fail when the
+# results file has not been generated yet.
+COPY scripts ./scripts/
 
 RUN pip install --no-cache-dir .
 

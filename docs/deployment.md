@@ -53,6 +53,24 @@ serves `/health`.
 Placeholder values (`REPLACE_ME`, `CHANGE_ME`) are treated as missing. See
 [api.md](api.md#health) for how this surfaces.
 
+### Security
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `GATEWAY_SHARED_SECRET` | insecure dev default | **Change this.** Must match on gateway and core; the core refuses the trusted-header path otherwise |
+| `LUNAIR_ADMIN_KEY` | unset | Unlocks `/v1/keys`; leave unset to disable key management |
+| `DEV_AUTH_BYPASS` | `false` | Local-only auth shortcut. Keep `false` outside development |
+| `RATE_LIMIT_FAIL_CLOSED` | `true` | Reject requests when the rate limiter (Redis) is unavailable |
+| `BUDGET_ENFORCEMENT` | `true` | Enforce per-key monthly budgets |
+
+### Limits & budgets
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `UPSTREAM_TIMEOUT_SECONDS` | `30` | Per-attempt provider timeout |
+| `REQUEST_TIMEOUT_SECONDS` | `120` | End-to-end request budget |
+| `PARTITION_MONTHS_AHEAD` | `3` | Months of `requests` partitions kept provisioned |
+
 ### Infrastructure
 
 | Variable | Default | Notes |
