@@ -2,11 +2,14 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import text
 
 from lunair.config import settings
 from lunair.db.base import AsyncSessionLocal
 from lunair.db.models import BalanceSnapshot
+
+# Providers whose balance endpoint is authenticated with a Bearer credential.
+_BEARER_PROVIDERS = {"openai", "openrouter", "deepseek", "anthropic"}
 
 
 def _now() -> datetime:
@@ -18,13 +21,17 @@ def _provider_config() -> List[Dict[str, Any]]:
 
 
 async def fetch_provider_balance(
-    client: httpx.AsyncClient, provider: str, endpoint: str
+    client: httpx.AsyncClient,
+    provider: str,
+    endpoint: str,
+    credential: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Call one provider balance endpoint and normalize to USD.
 
-    Providers disagree on shape and units, so each is mapped explicitly.
-    An unreachable or unexpected endpoint yields ``available: false`` rather
-    than raising — a balance view is not worth failing a request over.
+    Providers disagree on shape and units, so each is mapped explicitly. An
+    unreachable, unauthenticated or unexpected endpoint yields
+    ``available: false`` rather than raising — a balance view is not worth
+    failing a request over.
     """
     result: Dict[str, Any] = {
         "provider": provider,
@@ -34,8 +41,15 @@ async def fetch_provider_balance(
         "note": None,
     }
 
+    headers: Dict[str, str] = {}
+    if provider in _BEARER_PROVIDERS:
+        if not credential:
+            result["note"] = "no credential configured"
+            return result
+        headers["Authorization"] = f"Bearer {credential}"
+
     try:
-        response = await client.get(endpoint, timeout=10.0)
+        response = await client.get(endpoint, headers=headers, timeout=10.0)
         response.raise_for_status()
         payload = response.json()
     except httpx.HTTPStatusError as err:
@@ -48,8 +62,6 @@ async def fetch_provider_balance(
     try:
         if provider == "openai":
             # /dashboard/billing/credit_grants — undocumented, normal API keys only.
-            # total_available is authoritative; the subtraction is a fallback for
-            # accounts where the field is absent.
             available = _to_float(payload.get("total_available"))
             if available is None:
                 granted = _to_float(payload.get("total_granted"))
@@ -71,7 +83,6 @@ async def fetch_provider_balance(
             result["balance_usd"] = credits - (usage or 0.0)
             result["lifetime_spend_usd"] = usage
         elif provider == "deepseek":
-            # /user/balance -> {"balance_infos": [{"currency": "USD", "total_balance": "..."}]}
             infos = payload.get("balance_infos") or []
             for info in infos:
                 if str(info.get("currency", "")).upper() == "USD":
@@ -81,7 +92,6 @@ async def fetch_provider_balance(
                 result["note"] = "no USD balance in response"
                 return result
         elif provider == "groq":
-            # Usage-based billing with no prepaid balance endpoint.
             result["note"] = "usage-based, no prepaid balance"
             return result
         else:
@@ -109,11 +119,11 @@ def _to_float(value: Any) -> Optional[float]:
 async def collect_balances() -> Dict[str, Any]:
     """Aggregate balances across every provider in config."""
     providers = _provider_config()
+    credentials = settings.get_provider_credentials()
     async with httpx.AsyncClient() as client:
-        results = await _gather_all(client, providers)
+        results = await _gather_all(client, providers, credentials)
 
     by_provider = {item["provider"]: item for item in results}
-
     known = [item["balance_usd"] for item in results if item["balance_usd"] is not None]
     total = sum(known) if known else None
 
@@ -127,12 +137,19 @@ async def collect_balances() -> Dict[str, Any]:
 
 
 async def _gather_all(
-    client: httpx.AsyncClient, providers: List[Dict[str, Any]]
+    client: httpx.AsyncClient,
+    providers: List[Dict[str, Any]],
+    credentials: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     import asyncio
 
     tasks = [
-        fetch_provider_balance(client, p.get("name", "unknown"), p.get("endpoint", ""))
+        fetch_provider_balance(
+            client,
+            p.get("name", "unknown"),
+            p.get("endpoint", ""),
+            credentials.get(p.get("name", "")),
+        )
         for p in providers
     ]
     gathered = await asyncio.gather(*tasks, return_exceptions=True)
@@ -177,38 +194,44 @@ async def refresh_balances() -> Dict[str, Any]:
 
 
 async def get_cached_balances(max_age_seconds: int = 300) -> Optional[Dict[str, Any]]:
-    """Return the most recent snapshot set, if recent enough to be useful."""
-    cutoff = _now().timestamp() - max_age_seconds
+    """Return the most recent snapshot per provider, if fresh enough to use.
 
+    Uses ``DISTINCT ON`` so only one row per provider is read, instead of
+    scanning the whole (unbounded) snapshot history.
+    """
+    # Postgres: newest snapshot per provider, and the newest overall.
+    sql = text(
+        """
+        SELECT DISTINCT ON (provider)
+               provider, balance_usd, lifetime_spend_usd, snapshot_at
+        FROM balance_snapshots
+        ORDER BY provider, snapshot_at DESC
+        """
+    )
     try:
         async with AsyncSessionLocal() as session:
-            stmt = select(BalanceSnapshot).order_by(BalanceSnapshot.snapshot_at.desc())
-            rows = (await session.execute(stmt)).scalars().all()
+            rows = (await session.execute(sql)).mappings().all()
     except Exception:
         return None
 
     if not rows:
         return None
 
-    newest = rows[0].snapshot_at
-    if newest is None or newest.timestamp() < cutoff:
+    newest = max(row["snapshot_at"] for row in rows if row["snapshot_at"] is not None)
+    if newest is None or newest.timestamp() < (_now().timestamp() - max_age_seconds):
         return None
 
-    latest: Dict[str, BalanceSnapshot] = {}
-    for row in rows:
-        latest.setdefault(row.provider, row)
-
     providers = []
-    for name, row in latest.items():
-        available = row.balance_usd is not None
+    for row in rows:
+        available = row["balance_usd"] is not None
         providers.append(
             {
-                "provider": name,
-                "balance_usd": row.balance_usd,
-                "lifetime_spend_usd": row.lifetime_spend_usd,
+                "provider": row["provider"],
+                "balance_usd": row["balance_usd"],
+                "lifetime_spend_usd": row["lifetime_spend_usd"],
                 "available": available,
                 "note": None if available else "no balance reported at last refresh",
-                "last_refreshed": row.snapshot_at.isoformat() if row.snapshot_at else None,
+                "last_refreshed": row["snapshot_at"].isoformat() if row["snapshot_at"] else None,
             }
         )
 
