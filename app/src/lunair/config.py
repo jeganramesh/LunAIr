@@ -9,6 +9,9 @@ PROVIDER_ENV_VARS: Dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "groq": "GROQ_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
 }
 
 # Values shipped in .env.example that must never be treated as real credentials.
@@ -31,6 +34,11 @@ def is_usable_api_key(value: Optional[str]) -> bool:
     return not any(marker in candidate.upper() for marker in PLACEHOLDER_MARKERS)
 
 
+def provider_env_var(provider: str) -> str:
+    """Environment variable that holds a provider's credential."""
+    return PROVIDER_ENV_VARS.get(provider, f"{provider.upper()}_API_KEY")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),
@@ -39,7 +47,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "LunAIR"
-    version: str = "0.1.0"
+    version: str = "0.2.0"
     debug: bool = False
 
     gateway_mode: str = Field(default="go", alias="GATEWAY_MODE")
@@ -68,19 +76,42 @@ class Settings(BaseSettings):
     # Retention window for request-log partitions, in days.
     retention_days: int = Field(default=30, alias="RETENTION_DAYS")
 
-    _yaml_cache: Optional[Dict[str, Any]] = None
+    # --- Security -------------------------------------------------------
+    # Shared secret the Go gateway presents on requests it forwards. Without
+    # it, the core refuses to honour the trusted-header path.
+    gateway_shared_secret: Optional[str] = Field(default=None, alias="GATEWAY_SHARED_SECRET")
+    # Admin key that unlocks the key-management API. Unset => API disabled.
+    admin_api_key: Optional[str] = Field(default=None, alias="LUNAIR_ADMIN_KEY")
+    # Local-development auth bypass. MUST stay false outside development.
+    dev_auth_bypass: bool = Field(default=False, alias="DEV_AUTH_BYPASS")
 
+    # --- Limits & budgets ----------------------------------------------
+    rate_limit_fail_closed: bool = Field(default=True, alias="RATE_LIMIT_FAIL_CLOSED")
+    budget_fail_closed: bool = Field(default=True, alias="BUDGET_FAIL_CLOSED")
+    budget_enforcement: bool = Field(default=True, alias="BUDGET_ENFORCEMENT")
+
+    # --- Timeouts -------------------------------------------------------
+    upstream_timeout_seconds: int = Field(default=30, alias="UPSTREAM_TIMEOUT_SECONDS")
+    request_timeout_seconds: int = Field(default=120, alias="REQUEST_TIMEOUT_SECONDS")
+
+    # Number of months of request partitions to keep provisioned ahead.
+    partition_months_ahead: int = Field(default=3, alias="PARTITION_MONTHS_AHEAD")
+
+    _yaml_cache: Optional[Dict[str, Any]] = None
+    _provider_map: Optional[Dict[str, str]] = None
+    _litellm_map: Optional[Dict[str, str]] = None
+
+    # --- config.yaml access --------------------------------------------
     def get_yaml_config(self) -> Dict[str, Any]:
         if self._yaml_cache is not None:
             return self._yaml_cache
 
-        # Look in relative paths from cwd or project root
         candidates = [
             Path(self.config_path),
             Path("../") / self.config_path,
             Path(__file__).resolve().parents[3] / "config" / "config.yaml",
         ]
-        
+
         cfg_file = None
         for candidate in candidates:
             if candidate.is_file():
@@ -116,6 +147,89 @@ class Settings(BaseSettings):
     def get_routing(self) -> Dict[str, List[str]]:
         return self.get_yaml_config().get("routing", {})
 
+    def get_gateway_config(self) -> Dict[str, Any]:
+        return self.get_yaml_config().get("gateway", {}) or {}
+
+    def get_rate_limit_config(self) -> Dict[str, Any]:
+        return self.get_gateway_config().get("rate_limit", {}) or {}
+
+    def get_circuit_breaker_config(self) -> Dict[str, Any]:
+        return self.get_gateway_config().get("circuit_breaker", {}) or {}
+
+    def get_budget_config(self) -> Dict[str, Any]:
+        return self.get_yaml_config().get("budgets", {}) or {}
+
+    def get_security_config(self) -> Dict[str, Any]:
+        return self.get_yaml_config().get("security", {}) or {}
+
+    # --- provider / model resolution -----------------------------------
+    def _build_provider_map(self) -> None:
+        by_name: Dict[str, str] = {}
+        litellm_by_name: Dict[str, str] = {}
+        for item in self.get_model_list():
+            name = item.get("model_name")
+            litellm_model = item.get("litellm_params", {}).get("model", "") or ""
+            if not name or not litellm_model:
+                continue
+            litellm_by_name[name] = litellm_model
+            provider = litellm_model.split("/")[0] if "/" in litellm_model else litellm_model
+            if provider:
+                by_name[name] = provider
+        self._provider_map = by_name
+        self._litellm_map = litellm_by_name
+
+    def provider_for_model(self, model_name: str) -> str:
+        """Resolve the provider serving a model, using config then heuristics."""
+        if self._provider_map is None:
+            self._build_provider_map()
+        assert self._provider_map is not None
+        provider = self._provider_map.get(model_name)
+        if provider:
+            return provider
+
+        lowered = model_name.lower()
+        if "gemini" in lowered:
+            return "gemini"
+        if "groq" in lowered or "llama" in lowered:
+            return "groq"
+        if "gpt" in lowered or lowered.startswith("o1") or lowered.startswith("o3"):
+            return "openai"
+        if "claude" in lowered:
+            return "anthropic"
+        return "openai"
+
+    def litellm_model_for(self, model_name: str) -> str:
+        """Return the fully-qualified LiteLLM model id for a configured alias."""
+        if self._litellm_map is None:
+            self._build_provider_map()
+        assert self._litellm_map is not None
+        return self._litellm_map.get(model_name, model_name)
+
+    def get_provider_credentials(self) -> Dict[str, str]:
+        """Map provider -> credential, read from the environment.
+
+        Used for provider calls the core makes itself (e.g. balance lookups)
+        that need the same credential the router uses.
+        """
+        creds: Dict[str, str] = {}
+        for item in self.get_model_list():
+            litellm_model = item.get("litellm_params", {}).get("model", "") or ""
+            provider = litellm_model.split("/")[0] if "/" in litellm_model else ""
+            if not provider:
+                continue
+            key = item.get("litellm_params", {}).get("api_key") or os.getenv(provider_env_var(provider), "")
+            if key:
+                creds[provider] = key
+        # Also expose providers referenced only by the balance config.
+        for entry in self.get_yaml_config().get("balance", {}).get("providers", []) or []:
+            name = entry.get("name")
+            if name and name not in creds:
+                value = os.getenv(provider_env_var(name), "")
+                if value:
+                    creds[name] = value
+        return creds
+
+    # --- provider health reporting -------------------------------------
     def get_provider_status(self) -> Dict[str, Dict[str, Any]]:
         """Report whether each configured provider has a usable API key.
 
@@ -130,7 +244,7 @@ class Settings(BaseSettings):
             if not provider:
                 continue
 
-            env_var = PROVIDER_ENV_VARS.get(provider, f"{provider.upper()}_API_KEY")
+            env_var = provider_env_var(provider)
             api_key = params.get("api_key") or os.getenv(env_var)
             status[provider] = {
                 "configured": is_usable_api_key(api_key),
