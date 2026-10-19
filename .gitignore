@@ -25,6 +25,7 @@ build/
 node_modules/
 .vite/
 *.local
+*.tsbuildinfo
 
 # Go
 gateway/bin/
