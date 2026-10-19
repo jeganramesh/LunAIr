@@ -21,7 +21,13 @@ LunAIR is a self-hostable, OpenAI-compatible LLM gateway unifying multiple AI pr
 ```bash
 cp .env.example .env
 # Edit .env with your provider API keys
+# Set GATEWAY_SHARED_SECRET to a random value (must match on gateway + core)
 ```
+
+> **Required:** the core only trusts requests forwarded by the gateway when
+> `GATEWAY_SHARED_SECRET` matches on both services. It ships with an insecure
+> development default — change it before any real deployment. See
+> [docs/security.md](docs/security.md).
 
 ### 2. Launch with Docker Compose
 ```bash
@@ -74,4 +80,19 @@ curl http://localhost:8080/metrics  # prometheus counters
 ```
 
 Database migrations run automatically on FastAPI container start.
+
+---
+
+## 🔐 Security, limits & budgets
+
+- **Authentication** happens at the gateway; the core trusts forwarded requests
+  only with a matching `GATEWAY_SHARED_SECRET`.
+- **Rate limits** (`rpm_per_key`, `tpm_per_key`) and **monthly budgets** are
+  enforced per key before the provider call. Over-limit requests get `429`;
+  over-budget requests get `402`.
+- **Key management** is available at `/v1/keys` when `LUNAIR_ADMIN_KEY` is set.
+- Streaming responses are logged and costed just like non-streaming ones.
+- Every request carries an `X-Request-Id` for tracing.
+
+See [docs/security.md](docs/security.md) for the full model.
 
