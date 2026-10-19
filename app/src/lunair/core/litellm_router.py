@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 import litellm
 from litellm import Router
 from lunair.config import settings
+from lunair.core.registry import load_registry
 
 # Optimize litellm initialization without remote network calls
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
@@ -15,8 +16,12 @@ def create_router(
     num_retries: int = 0,
     timeout: Optional[int] = None,
 ) -> Router:
-    """Create and configure a LiteLLM Router instance."""
-    resolved_model_list = model_list if model_list is not None else settings.get_model_list()
+    """Create and configure a LiteLLM Router instance.
+
+    When ``model_list`` is not supplied it is derived from the endpoint
+    registry, so every configured endpoint becomes a deployment.
+    """
+    resolved_model_list = model_list if model_list is not None else load_registry().litellm_model_list()
     resolved_fallbacks = fallbacks if fallbacks is not None else settings.get_fallbacks()
     resolved_timeout = timeout if timeout is not None else settings.upstream_timeout_seconds
 
@@ -31,6 +36,6 @@ def create_router(
 # Default singleton instance.
 #
 # Retries and fallbacks are handled explicitly in the chat handler so the two
-# mechanisms cannot multiply (previously Router retries stacked on top of the
-# manual candidate loop). The router here is purely the provider abstraction.
+# mechanisms cannot multiply. The router here is the provider abstraction; the
+# routing *policy* lives in lunair.core.routing.
 router = create_router(num_retries=0, fallbacks=[])
