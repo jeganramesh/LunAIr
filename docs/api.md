@@ -138,8 +138,10 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 |--------|---------|
 | `X-LUNAIR-Provider` | provider that served the request |
 | `X-LUNAIR-Model` | concrete model used |
-| `X-LUNAIR-Cost-USD` | cost from LiteLLM, six decimals. Always `0.000000` when streaming |
-| `X-LUNAIR-Fallback-From` | originally requested model, when a fallback or `auto/*` expansion changed it |
+| `X-LUNAIR-Requested` | model the caller asked for (e.g. `auto/cheap`) |
+| `X-LUNAIR-Cost-USD` | cost from LiteLLM, six decimals. `0.000000` when streaming (the cost is still logged) |
+| `X-LUNAIR-Fallback-From` | the first candidate, set **only** when a real failover occurred |
+| `X-Request-Id` | correlation id (echoed from the request or generated) |
 
 Through the gateway, `X-LUNAIR-Gateway: go` is also set.
 
@@ -171,8 +173,10 @@ connection:
 | Code | Cause |
 |------|-------|
 | `200` | success (streaming or buffered) |
-| `401` | direct call without a valid Bearer key |
+| `401` | direct call without a valid Bearer key, or gateway header without the shared secret |
+| `402` | the key's monthly budget is exhausted |
 | `422` | body failed schema validation |
+| `429` | rate limit exceeded (RPM/TPM). `Retry-After` is set |
 | `502` | every candidate provider failed. `detail` names the model and a truncated last error |
 | `503` | no provider credentials configured. `detail` names the env vars to set |
 
@@ -223,3 +227,36 @@ serves traffic through whatever is available.
 Independent of `auto/*`, `config.yaml` declares a LiteLLM fallback chain
 (`gpt-4o-mini` → `gemini-2.0-flash` → `groq-llama`) that operates inside the
 LiteLLM router.
+
+## `GET /ready`
+
+Readiness probe. Returns `200` when Postgres and Redis are both reachable, else
+`503`:
+
+```json
+{"ready": true, "dependencies": {"database": true, "redis": true}}
+```
+
+## Key management
+
+Gated behind the `X-LUNAIR-Admin-Key` header (must equal `LUNAIR_ADMIN_KEY`).
+When that variable is unset these endpoints return `404`.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/v1/keys` | Create a key; the plaintext is returned once |
+| `GET` | `/v1/keys` | List keys (no secrets) |
+| `PATCH` | `/v1/keys/{id}` | Update limits / budget / active state |
+| `DELETE` | `/v1/keys/{id}` | Revoke (deactivate) a key |
+
+```bash
+curl -X POST http://localhost:8000/v1/keys \
+  -H "X-LUNAIR-Admin-Key: $LUNAIR_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"team-a","rpm_limit":120,"tpm_limit":200000,"monthly_budget_usd":100}'
+```
+
+## `POST /internal/validate`
+
+Internal endpoint the gateway uses to resolve a Bearer key. Not part of the
+public API; requires the `X-LUNAIR-Gateway-Secret` header.
