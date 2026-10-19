@@ -49,6 +49,10 @@ class ChatCompletionRequest(BaseModel):
     reasoning_effort: Optional[str] = None
     service_tier: Optional[str] = None
     modalities: Optional[List[str]] = None
+    # OpenRouter-style provider routing preferences for this request.
+    provider: Optional[Dict[str, Any]] = None
+    # Model fallback array: try these models if the primary fails.
+    models: Optional[List[str]] = None
 
 
 # Parameters forwarded verbatim to the upstream provider when present.
