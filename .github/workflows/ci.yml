@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    name: app (python)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: lunair
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: lunair
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U lunair"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      # Tests use these placeholders; no real provider calls happen in CI.
+      OPENAI_API_KEY: sk-test-placeholder
+      GEMINI_API_KEY: test-placeholder
+      GROQ_API_KEY: test-placeholder
+      POSTGRES_USER: lunair
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: lunair
+      DATABASE_URL: postgresql+asyncpg://lunair:test@localhost:5432/lunair
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "app[dev]"
+
+      - name: Lint
+        run: python -m ruff check app tests
+
+      - name: Test
+        run: python -m pytest tests/unit -q
+
+  gateway:
+    name: gateway (go)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: gateway
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: gateway/go.sum
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+  dashboard:
+    name: dashboard (node)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: dashboard
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install
+        run: npm ci --no-fund --no-audit
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+  docker:
+    name: docker images
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build fastapi
+        run: docker compose build fastapi
+
+      - name: Build gateway
+        run: docker compose build gateway
+
+      - name: Build dashboard
+        run: docker compose build dashboard
+
+      - name: Smoke test
+        run: |
+          docker compose --profile gateway --profile dashboard up -d
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/health >/dev/null 2>&1 \
+               && curl -fsS http://localhost:8080/health >/dev/null 2>&1 \
+               && curl -fsS http://localhost:3000/ >/dev/null 2>&1; then
+              echo "all services healthy"
+              docker compose --profile gateway --profile dashboard down
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "services did not become healthy"
+          docker compose --profile gateway --profile dashboard logs --tail 50
+          docker compose --profile gateway --profile dashboard down
+          exit 1

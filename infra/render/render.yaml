@@ -1,0 +1,87 @@
+databases:
+  - name: lunair-postgres
+    databaseName: lunair
+    user: lunair
+    plan: free
+
+services:
+  - type: redis
+    name: lunair-redis
+    ipAllowList: []
+    plan: free
+
+  - type: web
+    name: lunair-fastapi
+    runtime: docker
+    dockerfilePath: ./app/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: lunair-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: lunair-redis
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: CONFIG_PATH
+        value: /app/config/config.yaml
+      - key: RETENTION_DAYS
+        value: "30"
+
+  - type: web
+    name: lunair-gateway
+    runtime: docker
+    dockerfilePath: ./gateway/Dockerfile
+    dockerContext: ./gateway
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: FASTAPI_URL
+        fromService:
+          type: web
+          name: lunair-fastapi
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: lunair-redis
+          property: connectionString
+      - key: GATEWAY_MODE
+        value: go
+
+  - type: web
+    name: lunair-dashboard
+    runtime: docker
+    dockerfilePath: ./dashboard/Dockerfile
+    dockerContext: ./dashboard
+    plan: free
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: lunair-gateway
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      - key: VITE_GATEWAY_URL
+        fromService:
+          type: web
+          name: lunair-gateway
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+    # VITE_* values are baked in at build time, so this service must redeploy
+    # whenever the gateway hostname changes.
+    buildFilter:
+      paths:
+        - dashboard/**

@@ -20,6 +20,9 @@ dependencies = [
     "asyncpg>=0.29.0",
     "alembic>=1.13.1",
     "litellm>=1.35.0",
+    "redis>=5.0.0",
+    "prometheus-client>=0.20.0",
+    "prometheus-fastapi-instrumentator>=6.1.0",
 ]
 
 [project.optional-dependencies]

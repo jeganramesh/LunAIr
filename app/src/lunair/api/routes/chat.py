@@ -12,6 +12,8 @@ from lunair.core.router_engine import resolve_intent
 from lunair.core.trust import TrustContext, verify_trust_or_auth
 from lunair.db.base import AsyncSessionLocal
 from lunair.db.models import Request as DBRequest
+from lunair.observability import metrics
+from lunair.reliability import circuit_breaker
 from lunair.schemas.chat import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -33,6 +35,16 @@ def extract_provider(model_name: str) -> str:
     if "gpt" in model_name:
         return "openai"
     return "openai"
+
+
+def summarize_error(err: Optional[BaseException], limit: int = 300) -> str:
+    """Collapse a provider exception into a single readable line."""
+    if err is None:
+        return "no provider attempted the request"
+    message = " ".join(str(err).split())
+    if len(message) > limit:
+        message = message[:limit] + "..."
+    return message
 
 
 async def record_request_in_db(
@@ -79,6 +91,26 @@ async def chat_completions(
     gateway_mode = "go" if trust.is_trusted else "fastapi_only"
 
     candidates = resolve_intent(req.model)
+
+    # Drop providers without real credentials so we fail fast with an
+    # actionable message instead of a 401 storm from every candidate.
+    unconfigured = settings.get_unconfigured_providers()
+    if unconfigured:
+        usable = [c for c in candidates if extract_provider(c) not in unconfigured]
+        if not usable:
+            missing = ", ".join(sorted(unconfigured.values()))
+            metrics.observe_completion(
+                provider="unknown", model=req.model, status="unconfigured"
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"No provider credentials configured. Set {missing} in .env "
+                    f"before requesting model '{req.model}'."
+                ),
+            )
+        candidates = usable
+
     last_error = None
     response_obj = None
     selected_model = None
@@ -104,6 +136,7 @@ async def chat_completions(
             resp = await router.acompletion(**call_kwargs)
             response_obj = resp
             selected_model = candidate
+            circuit_breaker.record_success(extract_provider(candidate))
             if idx > 0:
                 fallback_from = candidates[0]
             elif req.model != candidate:
@@ -111,16 +144,34 @@ async def chat_completions(
             break
         except Exception as err:
             last_error = err
+            circuit_breaker.record_failure(extract_provider(candidate))
             continue
 
     if response_obj is None:
+        metrics.observe_completion(
+            provider=extract_provider(candidates[0]) if candidates else "unknown",
+            model=req.model,
+            status="error",
+            latency_seconds=(time.time() - start_time),
+        )
         raise HTTPException(
             status_code=502,
-            detail=f"All provider candidates failed for model '{req.model}'. Last error: {str(last_error)}",
+            detail=(
+                f"All provider candidates failed for model '{req.model}'. "
+                f"Last error: {summarize_error(last_error)}"
+            ),
         )
 
     latency_ms = (time.time() - start_time) * 1000.0
     provider = extract_provider(selected_model)
+
+    metrics.observe_completion(
+        provider=provider,
+        model=selected_model,
+        status="success",
+        latency_seconds=latency_ms / 1000.0,
+        fallback_from=fallback_from,
+    )
 
     if req.stream:
         async def event_generator() -> AsyncGenerator[str, None]:

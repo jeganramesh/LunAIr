@@ -1,0 +1,66 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "version": 2,
+  "services": [
+    {
+      "name": "postgres",
+      "image": "postgres:16-alpine",
+      "restartPolicy": { "type": "ON_FAILURE", "retryCount": 10 },
+      "variables": {
+        "POSTGRES_USER": { "value": "lunair" },
+        "POSTGRES_DB": { "value": "lunair" }
+      },
+      "volumes": [{ "mountPath": "/var/lib/postgresql/data" }]
+    },
+    {
+      "name": "redis",
+      "image": "redis:7-alpine",
+      "restartPolicy": { "type": "ON_FAILURE", "retryCount": 10 },
+      "volumes": [{ "mountPath": "/data" }]
+    },
+    {
+      "name": "fastapi",
+      "rootDir": ".",
+      "dockerfilePath": "app/Dockerfile",
+      "healthcheckPath": "/health",
+      "healthcheckTimeout": 30,
+      "restartPolicy": { "type": "ON_FAILURE", "retryCount": 10 },
+      "variables": {
+        "DATABASE_URL": { "value": "${{Postgres.DATABASE_URL}}" },
+        "REDIS_URL": { "value": "${{Redis.REDIS_URL}}" },
+        "OPENAI_API_KEY": { "value": "${{OPENAI_API_KEY}}" },
+        "GEMINI_API_KEY": { "value": "${{GEMINI_API_KEY}}" },
+        "GROQ_API_KEY": { "value": "${{GROQ_API_KEY}}" },
+        "CORS_ORIGINS": { "value": "${{CORS_ORIGINS}}" },
+        "CONFIG_PATH": { "value": "/app/config/config.yaml" },
+        "RETENTION_DAYS": { "value": "30" }
+      }
+    },
+    {
+      "name": "gateway",
+      "rootDir": "gateway",
+      "dockerfilePath": "Dockerfile",
+      "healthcheckPath": "/health",
+      "healthcheckTimeout": 30,
+      "restartPolicy": { "type": "ON_FAILURE", "retryCount": 10 },
+      "variables": {
+        "PORT": { "value": "8080" },
+        "FASTAPI_URL": { "value": "${{fastapi.RAILWAY_PUBLIC_DOMAIN}}" },
+        "REDIS_URL": { "value": "${{Redis.REDIS_URL}}" },
+        "GATEWAY_MODE": { "value": "go" }
+      }
+    },
+    {
+      "name": "dashboard",
+      "rootDir": "dashboard",
+      "dockerfilePath": "Dockerfile",
+      "restartPolicy": { "type": "ON_FAILURE", "retryCount": 10 },
+      "build": {
+        "buildArgs": {
+          "VITE_API_URL": "${{gateway.RAILWAY_PUBLIC_DOMAIN}}",
+          "VITE_GATEWAY_URL": "${{gateway.RAILWAY_PUBLIC_DOMAIN}}"
+        }
+      }
+    }
+  ]
+}

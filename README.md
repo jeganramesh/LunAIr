@@ -25,7 +25,8 @@ cp .env.example .env
 
 ### 2. Launch with Docker Compose
 ```bash
-docker compose up --build
+# full stack (Go gateway :8080 + FastAPI :8000)
+docker compose --profile gateway up --build -d
 ```
 
 ### 3. Send a Request
@@ -41,6 +42,36 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ---
 
 ## ⚙️ Switching Gateway Modes
-LunAIR supports two modes via the `GATEWAY_MODE` environment variable or `config/config.yaml`:
-- `go` (default / production): Traffic flows through the Go proxy on port 8080 to FastAPI on port 8000.
-- `fastapi_only` (dev): Clients communicate directly with FastAPI on port 8000.
+
+`GATEWAY_MODE` accepts two values (also read from `config/config.yaml`):
+
+| Mode | Value | Traffic path |
+|------|-------|--------------|
+| Production (default) | `go` | Client → Go gateway `:8080` → FastAPI `:8000` → providers |
+| Development | `fastapi_only` | Client → FastAPI `:8000` → providers (Go edge skipped) |
+
+Toggle it with the compose profile:
+
+```bash
+# fastapi_only — Go gateway is not started (default)
+docker compose up -d
+
+# go — full stack including the gateway
+docker compose --profile gateway up -d
+```
+
+Both paths return identical OpenAI-compatible responses.
+
+---
+
+## 🩺 Verify the Stack
+
+```bash
+curl http://localhost:8080/health   # gateway
+curl http://localhost:8000/health   # fastapi core
+curl http://localhost:8080/v1/models
+curl http://localhost:8080/metrics  # prometheus counters
+```
+
+Database migrations run automatically on FastAPI container start.
+
