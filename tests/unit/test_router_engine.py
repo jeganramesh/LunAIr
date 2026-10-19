@@ -1,4 +1,3 @@
-import pytest
 from lunair.core.router_engine import resolve_intent
 
 
