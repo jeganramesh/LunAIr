@@ -1,6 +1,5 @@
-from unittest.mock import MagicMock, patch
-import pytest
-from litellm import Router, AuthenticationError
+from unittest.mock import patch
+from litellm import AuthenticationError
 from lunair.core.litellm_router import create_router
 
 
