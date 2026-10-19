@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/lunair/lunair/gateway/internal/auth"
 	"github.com/lunair/lunair/gateway/internal/config"
 	"github.com/lunair/lunair/gateway/internal/health"
 	"github.com/lunair/lunair/gateway/internal/middleware"
@@ -26,11 +27,15 @@ func main() {
 	if !cfg.IsGoMode() {
 		logger.Warnf("GATEWAY_MODE=%s — gateway will not forward traffic; hit FastAPI directly", cfg.GatewayMode)
 	}
+	if cfg.SharedSecret == "" {
+		logger.Warnf("GATEWAY_SHARED_SECRET is unset — /v1 will return 503 until it is configured")
+	}
 
 	ctx := context.Background()
 	rdb, err := redisclient.New(cfg.RedisURL)
 	if err != nil {
 		logger.Warnf("redis disabled: %v", err)
+		rdb = nil
 	} else if err := redisclient.Ping(ctx, rdb); err != nil {
 		logger.Warnf("redis unavailable: %v", err)
 	} else {
@@ -51,7 +56,9 @@ func main() {
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	if cfg.IsGoMode() {
-		r.Any("/v1/*path", gin.WrapH(proxyHandler))
+		// Authentication runs at the edge; the core then trusts the resolved
+		// identity via the shared secret.
+		r.Any("/v1/*path", auth.Authenticate(cfg, rdb), gin.WrapH(proxyHandler))
 	} else {
 		r.NoRoute(func(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{
@@ -67,6 +74,10 @@ func main() {
 		Addr:              ":" + cfg.Port,
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       cfg.ReadTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+		// WriteTimeout stays 0: SSE responses stream for as long as the
+		// upstream takes and must not be cut off.
 	}
 
 	go func() {
