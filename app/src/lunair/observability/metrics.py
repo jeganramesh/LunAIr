@@ -54,6 +54,19 @@ BUDGET_BLOCKED = Counter(
     ["key_id"],
 )
 
+PII_REDACTED = Counter(
+    "lunair_pii_redacted_total",
+    "PII entities redacted from prompts.",
+)
+
+INJECTION_BLOCKED = Counter(
+    "lunair_injection_blocked_total",
+    "Requests blocked by prompt-injection detection.",
+)
+
+CACHE_HITS = Counter("lunair_cache_hits_total", "Response cache hits.")
+CACHE_MISSES = Counter("lunair_cache_misses_total", "Response cache misses.")
+
 
 def observe_completion(
     provider: str,

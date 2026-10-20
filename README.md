@@ -96,3 +96,26 @@ Database migrations run automatically on FastAPI container start.
 
 See [docs/security.md](docs/security.md) for the full model.
 
+---
+
+## 🧭 Routing
+
+LunAIr routes on two layers: the **model** (which model answers) and the
+**endpoint** (which provider/region/tier serves it). A model can have several
+endpoints, each with its own pricing.
+
+- **Strategies**: `priority`, `weighted`, `round_robin`, `random`, `least_used`,
+  `p2c`, `cost_optimized`, `latency_optimized`, `throughput_optimized`, `lkgp`,
+  `cache_optimized`, `auto`.
+- **`auto/*` aliases** pick a strategy per alias (`auto/cheap`, `auto/fast`,
+  `auto/balanced`, …); `auto` scores endpoints on cost, latency, success and load.
+- **Provider preferences** per request: `order`, `only`, `ignore`, `sort`,
+  `max_price`, `zdr`, `data_collection`, `allow_fallbacks`.
+- **Model fallbacks**: pass `"models": [...]` to fail over across models.
+- **Guardrails**: PII redaction (restorable) and prompt-injection detection run
+  before the provider call.
+- **Caching & compression**: tenant-scoped response cache and a safe prompt
+  compression tier.
+
+See [docs/routing.md](docs/routing.md) for configuration and the request lifecycle.
+

@@ -139,6 +139,9 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 | `X-LUNAIR-Provider` | provider that served the request |
 | `X-LUNAIR-Model` | concrete model used |
 | `X-LUNAIR-Requested` | model the caller asked for (e.g. `auto/cheap`) |
+| `X-LUNAIR-Endpoint` | the endpoint that served the request |
+| `X-LUNAIR-Strategy` | routing strategy used |
+| `X-LUNAIR-Cache` | `hit` or `miss` |
 | `X-LUNAIR-Cost-USD` | cost from LiteLLM, six decimals. `0.000000` when streaming (the cost is still logged) |
 | `X-LUNAIR-Fallback-From` | the first candidate, set **only** when a real failover occurred |
 | `X-Request-Id` | correlation id (echoed from the request or generated) |
@@ -260,3 +263,35 @@ curl -X POST http://localhost:8000/v1/keys \
 
 Internal endpoint the gateway uses to resolve a Bearer key. Not part of the
 public API; requires the `X-LUNAIR-Gateway-Secret` header.
+
+## Provider preferences and model fallbacks
+
+The request body accepts an OpenRouter-style `provider` object and a `models`
+fallback array:
+
+```json
+{
+  "model": "auto/cheap",
+  "messages": [{"role": "user", "content": "hi"}],
+  "provider": {"only": ["gemini", "openai"], "sort": "price", "max_price": 0.5},
+  "models": ["groq-llama"]
+}
+```
+
+| Field | Effect |
+|-------|--------|
+| `order` | try these providers first, in order |
+| `only` / `ignore` | restrict / exclude providers |
+| `sort` | `price`, `throughput` or `latency` |
+| `max_price` | refuse if no endpoint is at or below this USD/1M price |
+| `zdr` / `data_collection` | restrict to zero-data-retention endpoints |
+| `allow_fallbacks` | whether other providers may be tried |
+| `models` | fallback models, tried if the primary's endpoints all fail |
+
+## Guardrails
+
+If `security.pii_redaction` is enabled, PII (EMAIL, PHONE, SSN, CREDIT_CARD,
+API_KEY) is replaced with restorable placeholders before the provider call and
+restored in non-streaming responses. If `security.injection_detection` is
+enabled and a prompt scores at or above `injection_risk_threshold`, the request
+is rejected with `400` and a `{risk_score, threats}` detail.

@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-19
+
+The router layer: LunAIr is now a two-layer router (model → endpoints), with
+guardrails, response caching and prompt compression on the request path.
+
+### Added
+- **Endpoint registry** (`core/registry.py`): a model may be served by many
+  endpoints (provider + region + tier + price). Reads the new `models:` config
+  block, and stays backward-compatible with the legacy `model_list:`.
+- **Routing engine** (`core/routing.py`) with strategies: `priority`, `weighted`,
+  `round_robin`, `random`, `least_used`, `p2c`, `cost_optimized`,
+  `latency_optimized`, `throughput_optimized`, `lkgp`, `cache_optimized`, `auto`.
+- **Provider preferences** per request (OpenRouter-style): `order`, `only`,
+  `ignore`, `sort`, `max_price`, `zdr`, `data_collection`, `allow_fallbacks`.
+- **`auto/*` aliases** with a per-alias strategy, and a multi-factor `auto`
+  scoring engine (cost, latency, success rate, load).
+- **Model fallback arrays** (`models: [...]`) on the request.
+- **Routing telemetry** (`reliability/stats.py`): rolling latency/success/load
+  used by the latency-, least-used- and auto- strategies.
+- **Guardrails** (`security/guardrails.py`): PII redaction with deterministic,
+  restorable placeholders (EMAIL/PHONE/SSN/CREDIT_CARD/API_KEY), and heuristic
+  prompt-injection detection with block/allow.
+- **Response caching** (`services/cache.py`): tenant-scoped exact-match cache
+  with TTL; semantic caching left as an opt-in hook.
+- **Prompt compression** (`services/compression.py`): a safe "lite" engine
+  (whitespace/dedup) that composes into a pipeline.
+- New response headers: `X-LUNAIR-Endpoint`, `X-LUNAIR-Strategy`,
+  `X-LUNAIR-Cache`; new metrics for cache, PII and injection.
+
+### Changed
+- `/v1/models` now reports endpoints, pricing and context per model.
+- The chat handler resolves endpoints (registry + preferences + strategy)
+  instead of a static model list, and applies guardrails/compression before the
+  provider call.
+
 ## [0.2.0] - 2026-10-19
 
 Hardening pass: closes the security, correctness and reliability gaps found in

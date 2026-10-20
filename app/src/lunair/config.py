@@ -162,30 +162,32 @@ class Settings(BaseSettings):
     def get_security_config(self) -> Dict[str, Any]:
         return self.get_yaml_config().get("security", {}) or {}
 
+    def get_models_config(self) -> Dict[str, Any]:
+        """Explicit ``models:`` block, or ``{}`` when the legacy list is used."""
+        return self.get_yaml_config().get("models", {}) or {}
+
+    def get_routing_config(self) -> Dict[str, Any]:
+        """Full routing section: default strategy, aliases, auto weights."""
+        return self.get_yaml_config().get("routing", {}) or {}
+
+    def get_cache_config(self) -> Dict[str, Any]:
+        return self.get_yaml_config().get("semantic_cache", {}) or {}
+
+    def get_compression_config(self) -> Dict[str, Any]:
+        return self.get_yaml_config().get("compression", {}) or {}
+
     # --- provider / model resolution -----------------------------------
-    def _build_provider_map(self) -> None:
-        by_name: Dict[str, str] = {}
-        litellm_by_name: Dict[str, str] = {}
-        for item in self.get_model_list():
-            name = item.get("model_name")
-            litellm_model = item.get("litellm_params", {}).get("model", "") or ""
-            if not name or not litellm_model:
-                continue
-            litellm_by_name[name] = litellm_model
-            provider = litellm_model.split("/")[0] if "/" in litellm_model else litellm_model
-            if provider:
-                by_name[name] = provider
-        self._provider_map = by_name
-        self._litellm_map = litellm_by_name
+    def _registry(self):
+        # Imported lazily to avoid a config <-> registry import cycle.
+        from lunair.core.registry import load_registry
+
+        return load_registry()
 
     def provider_for_model(self, model_name: str) -> str:
         """Resolve the provider serving a model, using config then heuristics."""
-        if self._provider_map is None:
-            self._build_provider_map()
-        assert self._provider_map is not None
-        provider = self._provider_map.get(model_name)
-        if provider:
-            return provider
+        endpoints = self._registry().endpoints_for(model_name)
+        if endpoints:
+            return endpoints[0].provider
 
         lowered = model_name.lower()
         if "gemini" in lowered:
@@ -200,10 +202,10 @@ class Settings(BaseSettings):
 
     def litellm_model_for(self, model_name: str) -> str:
         """Return the fully-qualified LiteLLM model id for a configured alias."""
-        if self._litellm_map is None:
-            self._build_provider_map()
-        assert self._litellm_map is not None
-        return self._litellm_map.get(model_name, model_name)
+        endpoints = self._registry().endpoints_for(model_name)
+        if endpoints:
+            return endpoints[0].litellm_model
+        return model_name
 
     def get_provider_credentials(self) -> Dict[str, str]:
         """Map provider -> credential, read from the environment.
@@ -212,14 +214,9 @@ class Settings(BaseSettings):
         that need the same credential the router uses.
         """
         creds: Dict[str, str] = {}
-        for item in self.get_model_list():
-            litellm_model = item.get("litellm_params", {}).get("model", "") or ""
-            provider = litellm_model.split("/")[0] if "/" in litellm_model else ""
-            if not provider:
-                continue
-            key = item.get("litellm_params", {}).get("api_key") or os.getenv(provider_env_var(provider), "")
-            if key:
-                creds[provider] = key
+        for endpoint in self._registry().all_endpoints():
+            if endpoint.api_key:
+                creds[endpoint.provider] = endpoint.api_key
         # Also expose providers referenced only by the balance config.
         for entry in self.get_yaml_config().get("balance", {}).get("providers", []) or []:
             name = entry.get("name")
@@ -237,19 +234,11 @@ class Settings(BaseSettings):
         """
         status: Dict[str, Dict[str, Any]] = {}
 
-        for item in self.get_model_list():
-            params = item.get("litellm_params", {}) or {}
-            litellm_model = params.get("model", "") or ""
-            provider = litellm_model.split("/")[0] if "/" in litellm_model else litellm_model
-            if not provider:
-                continue
-
-            env_var = provider_env_var(provider)
-            api_key = params.get("api_key") or os.getenv(env_var)
-            status[provider] = {
-                "configured": is_usable_api_key(api_key),
-                "env_var": env_var,
-                "model": litellm_model,
+        for endpoint in self._registry().all_endpoints():
+            status[endpoint.provider] = {
+                "configured": is_usable_api_key(endpoint.api_key),
+                "env_var": provider_env_var(endpoint.provider),
+                "model": endpoint.litellm_model,
             }
 
         return status

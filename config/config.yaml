@@ -9,27 +9,56 @@ gateway:
     failure_threshold: 3
     cooldown_seconds: 60
 
-model_list:
-  - model_name: gpt-4o-mini
-    litellm_params:
-      model: openai/gpt-4o-mini
-      api_key: os.environ/OPENAI_API_KEY
-  - model_name: gemini-2.0-flash
-    litellm_params:
-      model: gemini/gemini-2.0-flash
-      api_key: os.environ/GEMINI_API_KEY
-  - model_name: groq-llama
-    litellm_params:
-      model: groq/llama-3.3-70b
-      api_key: os.environ/GROQ_API_KEY
+# --- Endpoint registry (two-layer routing) -------------------------------
+# A model may be served by several endpoints; routing picks one per request.
+models:
+  gpt-4o-mini:
+    endpoints:
+      - provider: openai
+        model: openai/gpt-4o-mini
+        price_in: 0.15          # USD per 1M prompt tokens
+        price_out: 0.60
+        context: 128000
+        api_key: os.environ/OPENAI_API_KEY
+  gemini-2.0-flash:
+    endpoints:
+      - provider: gemini
+        model: gemini/gemini-2.0-flash
+        price_in: 0.10
+        price_out: 0.40
+        context: 1000000
+        api_key: os.environ/GEMINI_API_KEY
+  groq-llama:
+    endpoints:
+      - provider: groq
+        model: groq/llama-3.3-70b
+        price_in: 0.05
+        price_out: 0.08
+        context: 128000
+        api_key: os.environ/GROQ_API_KEY
+
+# --- Routing policy ------------------------------------------------------
+routing:
+  strategy: priority            # default when no alias strategy applies
+  auto_weights:                 # weights for the `auto` strategy
+    cost: 0.35
+    latency: 0.30
+    success: 0.25
+    load: 0.10
+  aliases:
+    auto/cheap:
+      strategy: cost_optimized
+      candidates: ["gemini-2.0-flash", "gpt-4o-mini"]
+    auto/fast:
+      strategy: latency_optimized
+      candidates: ["groq-llama", "gemini-2.0-flash"]
+    auto/balanced:
+      strategy: auto
+      candidates: ["gpt-4o-mini", "gemini-2.0-flash", "groq-llama"]
 
 router_settings:
   fallbacks:
     - gpt-4o-mini: ["gemini-2.0-flash", "groq-llama"]
-
-routing:
-  auto/cheap: ["gemini-2.0-flash", "gpt-4o-mini"]
-  auto/fast: ["groq-llama", "gemini-2.0-flash"]
 
 balance:
   refresh_interval_seconds: 300
@@ -63,6 +92,10 @@ semantic_cache:
   ttl_seconds: 3600
   namespace: "lunair"
   exclude_agent_keys: true
+
+compression:
+  enabled: true
+  mode: "lite"                  # lite (safe, always-on tier)
 
 logging:
   store_prompts_in_spend_logs: true
